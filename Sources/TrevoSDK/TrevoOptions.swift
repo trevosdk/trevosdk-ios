@@ -6,6 +6,9 @@ public struct TrevoOptions: Sendable {
     /// This build's version, sent on every event and compared with `minAppVersion`. Defaults to
     /// `CFBundleShortVersionString`. Without one, a gated experiment returns control.
     public var appVersion: String?
+    /// The language the app shows, such as `pt-BR`, for parameters with text per language.
+    /// Defaults to the localization the app runs in; `setLocale` changes it at runtime.
+    public var locale: String?
     /// Assign against this before storage and the network have answered.
     public var bootstrapConfig: [ExperimentConfig]
     public var configURL: URL
@@ -25,6 +28,7 @@ public struct TrevoOptions: Sendable {
     public init(
         apiKey: String,
         appVersion: String? = TrevoOptions.bundleVersion,
+        locale: String? = nil,
         bootstrapConfig: [ExperimentConfig] = [],
         configURL: URL = TrevoOptions.defaultConfigURL,
         ingestionURL: URL = TrevoOptions.defaultIngestionURL,
@@ -38,6 +42,7 @@ public struct TrevoOptions: Sendable {
     ) {
         self.apiKey = apiKey
         self.appVersion = appVersion
+        self.locale = locale
         self.bootstrapConfig = bootstrapConfig
         self.configURL = configURL
         self.ingestionURL = ingestionURL

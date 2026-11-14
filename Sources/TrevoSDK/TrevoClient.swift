@@ -14,6 +14,7 @@ public final class TrevoClient: @unchecked Sendable {
         var assignments: [String: String] = [:]
         var exposures = ExposureDeduper()
         var pending: [PendingEvent] = []
+        var locale: String?
         var listeners: [UUID: @MainActor @Sendable () -> Void] = [:]
         // Startup can load config before identity; publishing that state would flash control.
         var canEmitChanges = false
@@ -36,6 +37,7 @@ public final class TrevoClient: @unchecked Sendable {
     private let state = Locked(State())
     private let enabled: Bool
     private let appVersion: String?
+    private let defaultLocale: String?
     private let bootstrap: ExperimentRegistry
     private let pollInterval: TimeInterval
     private let flushInterval: TimeInterval
@@ -57,6 +59,7 @@ public final class TrevoClient: @unchecked Sendable {
         let refusal = Self.keyRefusal(apiKey)
         self.enabled = refusal == nil
         self.appVersion = options.appVersion.flatMap { JSString.isBlank($0) ? nil : $0 }
+        self.defaultLocale = Self.cleanLocale(options.locale)
         self.bootstrap = ExperimentRegistry(options.bootstrapConfig)
         self.pollInterval = Self.clamped(options.pollInterval, from: Constants.minPollInterval)
         self.flushInterval = Self.clamped(options.flushInterval, from: Constants.minFlushInterval)
@@ -106,11 +109,14 @@ public final class TrevoClient: @unchecked Sendable {
 
     /// The value the running experiment on `name` gives this user, recording an exposure like
     /// `getVariant`. Returns `defaultValue` when no experiment sets it, the arm sets no value, or
-    /// the value is another type.
+    /// the value is another type. Text per language gives the text for the app's language (see
+    /// `setLocale`), or `defaultValue` when it has none.
     public func getParameter(_ name: String, default defaultValue: String, trackExposure: Bool = true)
         -> String
     {
-        parameter(name, trackExposure)?.stringValue ?? defaultValue
+        guard let value = parameter(name, trackExposure) else { return defaultValue }
+        if let text = value.stringValue { return text }
+        return TranslatedText.text(value, locale: shownLocale) ?? defaultValue
     }
 
     public func getParameter(_ name: String, default defaultValue: Bool, trackExposure: Bool = true)
@@ -133,6 +139,19 @@ public final class TrevoClient: @unchecked Sendable {
             number.rounded() == number, let whole = Int(exactly: number)
         else { return defaultValue }
         return whole
+    }
+
+    /// The language the app shows, such as `pt-BR`, for parameters with text per language. Call it
+    /// where the app picks or changes its language; `nil` goes back to `TrevoOptions.locale`, or
+    /// to the localization the app runs in.
+    public func setLocale(_ locale: String?) {
+        let next = Self.cleanLocale(locale)
+        let changed = state.withLock { state -> Bool in
+            guard state.locale != next else { return false }
+            state.locale = next
+            return true
+        }
+        if changed { emitChange() }
     }
 
     // MARK: Events
@@ -212,8 +231,8 @@ public final class TrevoClient: @unchecked Sendable {
         await startup.value
     }
 
-    /// Calls `listener` on the main thread after anything that can change an assignment: config,
-    /// identity, or startup finishing.
+    /// Calls `listener` on the main thread after anything that can change what the getters return:
+    /// config, identity, `setLocale`, or startup finishing.
     @discardableResult
     public func onChange(_ listener: @escaping @MainActor @Sendable () -> Void) -> TrevoSubscription {
         let id = UUID()
@@ -360,6 +379,22 @@ public final class TrevoClient: @unchecked Sendable {
         guard let experiment = Parameters.experiment(setting: name, in: configs) else { return nil }
         let variant = assign(experiment, trackExposure: trackExposure)
         return Parameters.value(name, in: experiment, variant: variant)
+    }
+
+    private var shownLocale: String? {
+        state.withLock { $0.locale } ?? defaultLocale ?? Self.appLocale
+    }
+
+    // The localization the app runs in, which can differ from the device's first language.
+    private static var appLocale: String? {
+        cleanLocale(Bundle.main.preferredLocalizations.first)
+            ?? cleanLocale(Locale.preferredLanguages.first)
+    }
+
+    private static func cleanLocale(_ locale: String?) -> String? {
+        guard let locale else { return nil }
+        let trimmed = JSString.trimmed(locale)
+        return trimmed.isEmpty ? nil : String(decoding: trimmed, as: UTF16.self)
     }
 
     private func persistAssignments() {

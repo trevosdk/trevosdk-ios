@@ -177,12 +177,13 @@ func makeClient(
     transport: FakeTransport = FakeTransport(),
     lifecycle: ManualLifecycle = ManualLifecycle(),
     appVersion: String? = "2.0.0",
+    locale: String? = nil,
     bootstrap: [ExperimentConfig] = [],
     errors: ErrorLog = ErrorLog()
 ) -> TrevoClient {
     TrevoClient(
         options: TrevoOptions(
-            apiKey: "tsk_live_test", appVersion: appVersion, bootstrapConfig: bootstrap,
+            apiKey: "tsk_live_test", appVersion: appVersion, locale: locale, bootstrapConfig: bootstrap,
             storage: storage, transport: transport, lifecycle: lifecycle,
             onError: { errors.record($0) }))
 }
