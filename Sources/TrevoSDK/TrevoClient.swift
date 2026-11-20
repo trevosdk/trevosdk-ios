@@ -46,9 +46,17 @@ public final class TrevoClient: @unchecked Sendable {
     private let lifecycle: any TrevoLifecycle
     let config: ConfigStore
     let events: EventQueue
+    let paywalls: PaywallStore
     private var startup: Task<Void, Never>!
 
-    public init(options: TrevoOptions) {
+    public convenience init(options: TrevoOptions) {
+        self.init(options: options, paywallFiles: PaywallDirectory.standard())
+    }
+
+    init(
+        options: TrevoOptions, paywallFiles: any PaywallPageFiles,
+        paywallDownloads: Bool = PaywallStore.platformHasView
+    ) {
         let onError = options.onError ?? Self.log
         let apiKey = options.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         let transport = options.transport ?? URLSessionTransport(timeout: Constants.requestTimeout)
@@ -66,9 +74,14 @@ public final class TrevoClient: @unchecked Sendable {
         self.onError = onError
         self.storage = storage
         self.lifecycle = options.lifecycle ?? SystemLifecycle()
+        let paywalls = PaywallStore(
+            files: paywallFiles, transport: transport, storage: storage, onError: onError,
+            downloads: paywallDownloads)
+        self.paywalls = paywalls
         self.config = ConfigStore(
             url: options.configURL, headers: headers, transport: transport, storage: storage,
-            onError: onError, onChange: { changes.emit() })
+            onError: onError, onChange: { changes.emit() },
+            onPaywalls: { entries, fetched in paywalls.adopt(entries, fetched: fetched) })
         self.events = EventQueue(
             url: options.ingestionURL, headers: headers, maxBatchSize: options.maxBatchSize,
             transport: transport, storage: storage, onError: onError)
@@ -249,6 +262,8 @@ public final class TrevoClient: @unchecked Sendable {
         stopTimers()
         cancelLifecycleSubscription()
         drainPending()
+        paywalls.stop()
+        await paywalls.idle()
         await events.flush()
         events.persist()
         await storage.drain()
@@ -260,9 +275,10 @@ public final class TrevoClient: @unchecked Sendable {
     private func start() async {
         let stored = await storage.read([
             StorageKey.anonymousId, StorageKey.userId, StorageKey.assignments,
-            StorageKey.config, StorageKey.queue,
+            StorageKey.config, StorageKey.queue, StorageKey.paywalls,
         ])
         restore(stored)
+        paywalls.hydrate(stored[StorageKey.paywalls] ?? StoredValue(value: nil, failed: false))
         config.hydrate(stored[StorageKey.config] ?? StoredValue(value: nil, failed: false))
         events.hydrate(stored[StorageKey.queue] ?? StoredValue(value: nil, failed: false))
         drainPending()
@@ -270,7 +286,7 @@ public final class TrevoClient: @unchecked Sendable {
         guard !isStopped else { return }
         keepLifecycleSubscription(lifecycle.subscribe { [weak self] status in self?.handle(status) })
         startTimers()
-        await config.refresh()
+        await refreshConfig()
 
         guard !isStopped else { return }
         state.withLock { state in
@@ -381,8 +397,19 @@ public final class TrevoClient: @unchecked Sendable {
         return Parameters.value(name, in: experiment, variant: variant)
     }
 
-    private var shownLocale: String? {
+    /// Also the locale a remote paywall page is told.
+    var shownLocale: String? {
         state.withLock { $0.locale } ?? defaultLocale ?? Self.appLocale
+    }
+
+    func report(_ error: TrevoError) {
+        onError(error)
+    }
+
+    // A page whose download failed offline is tried again after any refresh the server answers,
+    // a 304 included, not only when config changes.
+    private func refreshConfig() async {
+        if await config.refresh() == .answered { paywalls.downloadMissing() }
     }
 
     // The localization the app runs in, which can differ from the device's first language.
@@ -462,7 +489,7 @@ public final class TrevoClient: @unchecked Sendable {
         case .active:
             startTimers()
             // The only kill switch that needs no App Store release.
-            Task { await config.refresh() }
+            Task { await refreshConfig() }
             Task { await events.flush() }
         }
     }
@@ -473,7 +500,7 @@ public final class TrevoClient: @unchecked Sendable {
             if state.pollTask == nil {
                 state.pollTask = Self.repeating(every: pollInterval) { [weak self] in
                     guard let self else { return false }
-                    await self.config.refresh()
+                    await self.refreshConfig()
                     return true
                 }
             }

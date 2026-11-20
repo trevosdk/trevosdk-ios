@@ -34,6 +34,7 @@ enum StorageKey {
     static let config = "config"
     static let queue = "queue"
     static let assignments = "assignments"
+    static let paywalls = "paywalls"
 }
 
 /// String rules the JavaScript SDKs apply, so every SDK accepts and rejects the same input.

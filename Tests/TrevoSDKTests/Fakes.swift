@@ -179,13 +179,51 @@ func makeClient(
     appVersion: String? = "2.0.0",
     locale: String? = nil,
     bootstrap: [ExperimentConfig] = [],
-    errors: ErrorLog = ErrorLog()
+    errors: ErrorLog = ErrorLog(),
+    pages: MemoryPaywallFiles = MemoryPaywallFiles()
 ) -> TrevoClient {
     TrevoClient(
         options: TrevoOptions(
             apiKey: "tsk_live_test", appVersion: appVersion, locale: locale, bootstrapConfig: bootstrap,
             storage: storage, transport: transport, lifecycle: lifecycle,
-            onError: { errors.record($0) }))
+            onError: { errors.record($0) }),
+        paywallFiles: pages, paywallDownloads: true)
+}
+
+final class MemoryPaywallFiles: PaywallPageFiles, @unchecked Sendable {
+    private let lock = NSLock()
+    private var pages: [String: Data]
+
+    init(_ pages: [String: Data] = [:]) {
+        self.pages = pages
+    }
+
+    func read(_ sha256: String) throws -> Data? {
+        locked { pages[sha256] }
+    }
+
+    func write(_ sha256: String, _ data: Data) throws {
+        locked { pages[sha256] = data }
+    }
+
+    func remove(_ sha256: String) throws {
+        locked { _ = pages.removeValue(forKey: sha256) }
+    }
+
+    func stored() throws -> Set<String> {
+        locked { Set(pages.keys) }
+    }
+
+    subscript(sha256: String) -> Data? {
+        get { locked { pages[sha256] } }
+        set { locked { pages[sha256] = newValue } }
+    }
+
+    private func locked<T>(_ body: () throws -> T) rethrows -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return try body()
+    }
 }
 
 /// Polls until `condition` holds, for effects that land on a background queue.

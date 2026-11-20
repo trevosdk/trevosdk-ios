@@ -21,6 +21,10 @@ public final class FileStorage: TrevoStorage {
     /// sandbox shares Application Support with every other app; on tvOS in Caches, the only
     /// persistent-ish place tvOS gives an app, which the system may purge.
     public static func standard() -> FileStorage {
+        FileStorage(directory: standardDirectory())
+    }
+
+    static func standardDirectory() -> URL {
         let manager = FileManager.default
         #if os(tvOS)
             let base = manager.urls(for: .cachesDirectory, in: .userDomainMask).first
@@ -32,7 +36,7 @@ public final class FileStorage: TrevoStorage {
             let owner = Bundle.main.bundleIdentifier ?? ProcessInfo.processInfo.processName
             directory.appendPathComponent(owner, isDirectory: true)
         #endif
-        return FileStorage(directory: directory.appendingPathComponent("trevosdk", isDirectory: true))
+        return directory.appendingPathComponent("trevosdk", isDirectory: true)
     }
 
     public func read(_ key: String) throws -> String? {

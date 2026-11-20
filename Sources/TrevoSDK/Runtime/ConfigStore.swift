@@ -3,11 +3,19 @@ import Foundation
 /// Experiment config, persisted between launches. Persistence is not an optimisation: a client
 /// that starts empty serves control all session, then silently switches.
 final class ConfigStore: @unchecked Sendable {
+    enum Refresh: Equatable {
+        /// A new config was adopted, which already started its page downloads.
+        case adopted
+        /// The server answered without a new config: unchanged, an error, or a body it couldn't use.
+        case answered
+        case unanswered
+    }
+
     private struct State {
         var registry = ExperimentRegistry()
         var etag: String?
         var hasConfig = false
-        var refresh: Task<Void, Never>?
+        var refresh: Task<Refresh, Never>?
     }
 
     private let state = Locked(State())
@@ -17,10 +25,12 @@ final class ConfigStore: @unchecked Sendable {
     private let storage: StorageQueue
     private let onError: ErrorHandler
     private let onChange: @Sendable () -> Void
+    private let onPaywalls: @Sendable ([PaywallConfigEntry], _ fetched: Bool) -> Void
 
     init(
         url: URL, headers: [String: String], transport: any TrevoTransport, storage: StorageQueue,
-        onError: @escaping ErrorHandler, onChange: @escaping @Sendable () -> Void
+        onError: @escaping ErrorHandler, onChange: @escaping @Sendable () -> Void,
+        onPaywalls: @escaping @Sendable ([PaywallConfigEntry], _ fetched: Bool) -> Void = { _, _ in }
     ) {
         self.url = url
         self.headers = headers
@@ -28,6 +38,7 @@ final class ConfigStore: @unchecked Sendable {
         self.storage = storage
         self.onError = onError
         self.onChange = onChange
+        self.onPaywalls = onPaywalls
     }
 
     /// True once storage or the network has supplied a config, which then replaces any bootstrap.
@@ -53,29 +64,35 @@ final class ConfigStore: @unchecked Sendable {
         let adopted = state.withLock { state -> Bool in
             guard !state.hasConfig else { return false }
             state.registry = ExperimentRegistry(experiments)
-            state.etag = envelope["etag"]?.stringValue
+            // A config stored by an SDK without paywalls must be fetched in full once.
+            state.etag = envelope["paywalls"] == nil ? nil : envelope["etag"]?.stringValue
             state.hasConfig = true
             return true
         }
-        if adopted { onChange() }
+        if adopted {
+            onChange()
+            onPaywalls(PaywallConfig.parse(envelope["paywalls"]), false)
+        }
     }
 
     /// One fetch at a time, so an older response can never replace a newer one. A failure keeps
     /// the last-known config: on a phone the network is usually just absent.
-    func refresh() async {
-        let task = state.withLock { state -> Task<Void, Never> in
+    @discardableResult
+    func refresh() async -> Refresh {
+        let task = state.withLock { state -> Task<Refresh, Never> in
             if let running = state.refresh { return running }
             let task = Task { [self] in
-                await fetch()
+                let answered = await fetch()
                 self.state.withLock { $0.refresh = nil }
+                return answered
             }
             state.refresh = task
             return task
         }
-        await task.value
+        return await task.value
     }
 
-    private func fetch() async {
+    private func fetch() async -> Refresh {
         var headers = headers
         headers["Accept"] = "application/json"
         if let etag = state.withLock({ $0.etag }) { headers["If-None-Match"] = etag }
@@ -86,13 +103,13 @@ final class ConfigStore: @unchecked Sendable {
                 TrevoHTTPRequest(url: url, method: "GET", headers: headers))
         } catch {
             onError(TrevoError("Trevo config refresh failed", cause: error))
-            return
+            return .unanswered
         }
 
-        if response.statusCode == 304 { return }
+        if response.statusCode == 304 { return .answered }
         guard (200..<300).contains(response.statusCode) else {
             onError(TrevoError("Trevo config fetch failed with \(response.statusCode)"))
-            return
+            return .answered
         }
 
         let body: TrevoValue
@@ -100,7 +117,7 @@ final class ConfigStore: @unchecked Sendable {
             body = try JSON.decode(response.body)
         } catch {
             onError(TrevoError("Trevo config response is not JSON", cause: error))
-            return
+            return .answered
         }
         let experiments: [ExperimentConfig]
         switch ConfigParser.parse(body) {
@@ -109,7 +126,7 @@ final class ConfigStore: @unchecked Sendable {
         case .failure(let error):
             // Adopting it would break every assignment until the next poll.
             onError(TrevoError("Trevo config response invalid: \(error.message)"))
-            return
+            return .answered
         }
 
         // Cleared when the response carries none: a stale validator pins the client to old config.
@@ -120,11 +137,15 @@ final class ConfigStore: @unchecked Sendable {
             state.hasConfig = true
         }
         onChange()
-        persist(experiments: body.objectValue?["experiments"] ?? .array([]), etag: etag)
+        let paywalls = body.objectValue?["paywalls"]
+        onPaywalls(PaywallConfig.parse(paywalls), true)
+        persist(experiments: body.objectValue?["experiments"] ?? .array([]), paywalls: paywalls, etag: etag)
+        return .adopted
     }
 
-    private func persist(experiments: TrevoValue, etag: String?) {
-        var envelope: [String: TrevoValue] = ["experiments": experiments]
+    private func persist(experiments: TrevoValue, paywalls: TrevoValue?, etag: String?) {
+        // The key is always written: its absence marks a config stored by an SDK without paywalls.
+        var envelope: [String: TrevoValue] = ["experiments": experiments, "paywalls": paywalls ?? .array([])]
         if let etag { envelope["etag"] = .string(etag) }
         do {
             let raw = try JSON.encodeString(TrevoValue.object(envelope))
