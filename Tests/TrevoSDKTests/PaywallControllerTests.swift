@@ -41,7 +41,8 @@ private final class FakeSurface: PaywallSurface {
 @MainActor
 private final class ManualTimer {
     private var next = 0
-    private var pending: [(id: Int, delay: TimeInterval, action: @MainActor () -> Void)] = []
+    private var now: TimeInterval = 0
+    private var pending: [(id: Int, delay: TimeInterval, due: TimeInterval, action: @MainActor () -> Void)] = []
 
     var delays: [TimeInterval] { pending.map(\.delay) }
 
@@ -49,7 +50,7 @@ private final class ManualTimer {
         { [unowned self] delay, action in
             self.next += 1
             let id = self.next
-            self.pending.append((id, delay, action))
+            self.pending.append((id, delay, self.now + delay, action))
             return { [unowned self] in self.pending.removeAll { $0.id == id } }
         }
     }
@@ -58,6 +59,14 @@ private final class ManualTimer {
         let actions = pending
         pending.removeAll()
         actions.forEach { $0.action() }
+    }
+
+    /// Moves the clock on, firing each timer that comes due.
+    func advance(_ seconds: TimeInterval) {
+        now += seconds
+        let due = pending.filter { $0.due <= now }
+        pending.removeAll { $0.due <= now }
+        due.forEach { $0.action() }
     }
 }
 
@@ -150,7 +159,7 @@ final class PaywallControllerTests: XCTestCase {
         let controller = controller()
         controller.start()
         XCTAssertEqual(surface.loaded, [PaywallGuard.guarded(page.html)])
-        XCTAssertEqual(timer.delays, [1])
+        XCTAssertEqual(timer.delays, [PaywallController.startTimeout])
 
         send(controller, 1, "ready")
         timer.fire()
@@ -201,12 +210,42 @@ final class PaywallControllerTests: XCTestCase {
         XCTAssertEqual(reasons, ["timeout", "timeout", "crashed", "crashed"])
     }
 
+    // With a screen reader on, a cold WebView took ~2.8 s to commit, past the 2 s ready limit.
+    func testTheReadyLimitStartsWhenTheWebViewCommitsThePage() async {
+        await prepare()
+        let controller = controller(readyTimeout: 2)
+        controller.start()
+        XCTAssertEqual(timer.delays, [PaywallController.startTimeout])
+
+        controller.pageCommitted()
+        XCTAssertEqual(timer.delays, [2])
+        send(controller, 1, "ready")
+        XCTAssertEqual(surface.revealed, 1)
+        XCTAssertEqual(surface.fallbacks, 0)
+    }
+
+    func testALateCommitAfterAFallbackHeldMidPurchaseStartsNoNewLimit() async {
+        await prepare()
+        let controller = await purchasing()
+        timer.fire()
+        controller.pageCommitted()
+        XCTAssertEqual(timer.delays, [])
+        heldBuy?.resume()
+        await settle()
+    }
+
+    func testTheStartLimitIsNeverShorterThanTheAppsReadyLimit() async {
+        await prepare()
+        controller(readyTimeout: 8).start()
+        XCTAssertEqual(timer.delays, [8])
+    }
+
     func testAPageTheWebViewNeverGetsInTimeFallsBackSilently() async {
         await prepare()
         surface.handsOff = false
         let controller = controller()
         controller.start()
-        XCTAssertEqual(timer.delays, [1])
+        XCTAssertEqual(timer.delays, [PaywallController.startTimeout])
         timer.fire()
         controller.documentHandedOff()
 
@@ -217,6 +256,42 @@ final class PaywallControllerTests: XCTestCase {
         surface.handsOff = true
         self.controller().start()
         XCTAssertEqual(surface.loaded.count, 2)
+    }
+
+    // Compiling the network rules and making a cold WebView can take seconds on their own.
+    func testAPageHandedOffAfterTheReadyLimitStillShowsWhenItCommitsAndIsReady() async {
+        await prepare()
+        surface.handsOff = false
+        let controller = controller(readyTimeout: 2)
+        controller.start()
+        timer.advance(4)
+        controller.documentHandedOff()
+        controller.pageCommitted()
+        send(controller, 1, "ready")
+        timer.advance(60)
+
+        XCTAssertEqual(surface.revealed, 1)
+        XCTAssertEqual(surface.fallbacks, 0)
+        let events = await fallbackEvents()
+        XCTAssertEqual(events, [])
+    }
+
+    func testTheStartLimitRunsFromStartNotFromTheHandoffAndNeverSkipsTheVersion() async {
+        await prepare()
+        surface.handsOff = false
+        for _ in 0..<2 {
+            let controller = controller(readyTimeout: 2)
+            controller.start()
+            timer.advance(4)
+            controller.documentHandedOff()
+            timer.advance(1)
+        }
+
+        XCTAssertEqual(surface.fallbacks, 2)
+        let reasons = await fallbackEvents().map { $0["reason"] }
+        XCTAssertEqual(reasons, ["timeout", "timeout"])
+        controller().start()
+        XCTAssertEqual(surface.loaded.count, 3)
     }
 
     func testALimitThatIsntAPositiveNumberIsTheDefaultAndALongOneIsAMinute() {

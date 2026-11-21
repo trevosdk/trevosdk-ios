@@ -46,6 +46,8 @@ final class PaywallController {
 
     static let defaultReadyTimeout: TimeInterval = 2
     static let maxReadyTimeout: TimeInterval = 60
+    // A cold WebView can take ~3 s to start a page, more with a screen reader on.
+    static let startTimeout: TimeInterval = 5
     static let fallbackEvent = "$paywall_fallback"
     static let purchaseEvent = "purchase"
 
@@ -124,24 +126,28 @@ final class PaywallController {
             let subscription = client.onChange { [weak self] in self?.contextChanged() }
             self.subscription.withLock { $0 = subscription }
             lastContext = context
-            // Until the WebView has the page, the same limit guards getting it there.
-            cancelTimer = schedule(readyTimeout) { [weak self] in self?.neverHandedOff() }
+            // One start limit covers compiling the rules, making the WebView and starting the page.
+            let startLimit = min(max(readyTimeout, Self.startTimeout), Self.maxReadyTimeout)
+            cancelTimer = schedule(startLimit) { [weak self] in self?.notStartedInTime() }
             surface?.load(html)
         }
     }
 
-    /// The WebView has the document: the ready limit starts now.
+    /// The WebView has the document: from here a missed start limit is reported as a timeout.
     func documentHandedOff() {
-        guard phase == .loading, !handedOff else { return }
+        guard phase == .loading else { return }
         handedOff = true
-        cancelTimer?()
-        cancelTimer = schedule(readyTimeout) { [weak self] in self?.timedOut() }
     }
 
-    /// The WebView committed the page's navigation, so a timeout from here is the page's fault.
+    /// The WebView committed the page's navigation: the ready limit starts now, and a timeout from
+    /// here is the page's fault.
     func pageCommitted() {
-        guard phase == .loading else { return }
+        guard phase == .loading, !committed else { return }
         committed = true
+        // A page that already failed mid-purchase must not be timed, and so counted, again.
+        guard heldFallback == nil, !closePending else { return }
+        cancelTimer?()
+        cancelTimer = schedule(readyTimeout) { [weak self] in self?.timedOut() }
     }
 
     /// The platform has no WebView the paywall can use.
@@ -178,11 +184,16 @@ final class PaywallController {
         fail(.timeout)
     }
 
-    private func neverHandedOff() {
-        guard phase == .loading, !handedOff else { return }
-        end()
-        phase = .fallback
-        surface?.showFallback()
+    // Before the WebView has the page there is no page to blame, so it falls back silently.
+    private func notStartedInTime() {
+        guard phase == .loading else { return }
+        guard handedOff else {
+            end()
+            phase = .fallback
+            surface?.showFallback()
+            return
+        }
+        timedOut()
     }
 
     private func fail(_ reason: PaywallFallbackReason) {

@@ -231,6 +231,8 @@ final class PaywallStoreTests: XCTestCase {
         store.adopt([a.parsed], fetched: true)
         await store.idle()
         XCTAssertEqual(store.choose("main"), .fallback(.notDownloaded, sha256: a.sha256))
+        // choose() starts a round of its own; until it ends, the next round below can't start.
+        await store.idle()
 
         failing.withLock { $0 = false }
         store.downloadMissing()

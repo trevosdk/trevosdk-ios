@@ -4,6 +4,14 @@ All notable changes to the **TrevoSDK** Swift package are documented here.
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-11-20
+
+### Fixed
+
+- Remote paywall: the 2 second ready limit now starts once the WebView starts the page. Starting it
+  gets its own 5 seconds (or the app's limit if longer), so a slow device or one with a screen
+  reader on shows the page instead of always falling back.
+
 ## [0.1.2] - 2026-11-20
 
 ### Added
