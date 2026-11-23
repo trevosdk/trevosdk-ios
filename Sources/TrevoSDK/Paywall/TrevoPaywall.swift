@@ -31,7 +31,7 @@
             buy: @escaping @MainActor (String) async throws -> TrevoPurchaseOutcome,
             restore: @escaping @MainActor () async throws -> TrevoRestoreOutcome,
             links: [String: URL] = [:], onClose: (@MainActor () -> Void)? = nil,
-            readyTimeout: TimeInterval = 2, @ViewBuilder fallback: @escaping () -> Fallback
+            readyTimeout: TimeInterval = 5, @ViewBuilder fallback: @escaping () -> Fallback
         ) {
             _model = StateObject(
                 wrappedValue: PaywallModel(

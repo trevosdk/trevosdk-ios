@@ -42,7 +42,8 @@ private final class FakeSurface: PaywallSurface {
 private final class ManualTimer {
     private var next = 0
     private var now: TimeInterval = 0
-    private var pending: [(id: Int, delay: TimeInterval, due: TimeInterval, action: @MainActor () -> Void)] = []
+    private typealias Action = @MainActor () -> Void
+    private var pending: [(id: Int, delay: TimeInterval, due: TimeInterval, action: Action)] = []
 
     var delays: [TimeInterval] { pending.map(\.delay) }
 
@@ -174,9 +175,9 @@ final class PaywallControllerTests: XCTestCase {
         for _ in 0..<2 {
             let controller = controller()
             controller.start()
-            controller.pageCommitted()
+            send(controller, 1, "context")
             timer.fire()
-            send(controller, 1, "ready")
+            send(controller, 2, "ready")
             XCTAssertEqual(surface.revealed, 0)
         }
         XCTAssertEqual(surface.fallbacks, 2)
@@ -190,7 +191,7 @@ final class PaywallControllerTests: XCTestCase {
     }
 
     // Slow WebKit starts and memory kills aren't the page's fault, so neither skips the version.
-    func testOnlyATimeoutAfterThePageStartedCountsAgainstTheVersion() async {
+    func testOnlyATimeoutAfterThePagesScriptSpokeCountsAgainstTheVersion() async {
         await prepare()
         for _ in 0..<2 {
             let controller = controller()
@@ -210,34 +211,55 @@ final class PaywallControllerTests: XCTestCase {
         XCTAssertEqual(reasons, ["timeout", "timeout", "crashed", "crashed"])
     }
 
-    // With a screen reader on, a cold WebView took ~2.8 s to commit, past the 2 s ready limit.
-    func testTheReadyLimitStartsWhenTheWebViewCommitsThePage() async {
+    // A cold WebView took up to 5.3 s to run the page's script, past the 2 s ready limit.
+    func testTheReadyLimitStartsAtThePagesFirstMessage() async {
         await prepare()
         let controller = controller(readyTimeout: 2)
         controller.start()
         XCTAssertEqual(timer.delays, [PaywallController.startTimeout])
 
-        controller.pageCommitted()
+        timer.advance(5.4)
+        send(controller, 1, "context")
         XCTAssertEqual(timer.delays, [2])
-        send(controller, 1, "ready")
+        timer.advance(1.9)
+        send(controller, 2, "ready")
         XCTAssertEqual(surface.revealed, 1)
         XCTAssertEqual(surface.fallbacks, 0)
     }
 
-    func testALateCommitAfterAFallbackHeldMidPurchaseStartsNoNewLimit() async {
+    func testTheReadyLimitRunsFromTheFirstMessageOnlyNotEachLaterOne() async {
         await prepare()
-        let controller = await purchasing()
-        timer.fire()
-        controller.pageCommitted()
-        XCTAssertEqual(timer.delays, [])
-        heldBuy?.resume()
-        await settle()
+        let controller = controller()
+        controller.start()
+        send(controller, 1, "context")
+        timer.advance(0.999)
+        send(controller, 2, "products")
+        timer.advance(0.001)
+
+        XCTAssertEqual(surface.fallbacks, 1)
+        let reasons = await fallbackEvents().map { $0["reason"] }
+        XCTAssertEqual(reasons, ["timeout"])
+    }
+
+    func testAPageWhoseFirstMessageClosesItIsNeverTimed() async {
+        await prepare()
+        let controller = controller()
+        controller.start()
+        send(controller, 1, "close")
+        timer.advance(60)
+
+        XCTAssertEqual(closes, 1)
+        XCTAssertEqual(surface.fallbacks, 0)
+        let events = await fallbackEvents()
+        XCTAssertEqual(events, [])
+        self.controller().start()
+        XCTAssertEqual(surface.loaded.count, 2)
     }
 
     func testTheStartLimitIsNeverShorterThanTheAppsReadyLimit() async {
         await prepare()
-        controller(readyTimeout: 8).start()
-        XCTAssertEqual(timer.delays, [8])
+        controller(readyTimeout: 10).start()
+        XCTAssertEqual(timer.delays, [10])
     }
 
     func testAPageTheWebViewNeverGetsInTimeFallsBackSilently() async {
@@ -259,14 +281,13 @@ final class PaywallControllerTests: XCTestCase {
     }
 
     // Compiling the network rules and making a cold WebView can take seconds on their own.
-    func testAPageHandedOffAfterTheReadyLimitStillShowsWhenItCommitsAndIsReady() async {
+    func testAPageHandedOffAfterTheReadyLimitStillShowsWhenItIsReady() async {
         await prepare()
         surface.handsOff = false
         let controller = controller(readyTimeout: 2)
         controller.start()
         timer.advance(4)
         controller.documentHandedOff()
-        controller.pageCommitted()
         send(controller, 1, "ready")
         timer.advance(60)
 
@@ -282,7 +303,7 @@ final class PaywallControllerTests: XCTestCase {
         for _ in 0..<2 {
             let controller = controller(readyTimeout: 2)
             controller.start()
-            timer.advance(4)
+            timer.advance(7)
             controller.documentHandedOff()
             timer.advance(1)
         }
@@ -295,10 +316,10 @@ final class PaywallControllerTests: XCTestCase {
     }
 
     func testALimitThatIsntAPositiveNumberIsTheDefaultAndALongOneIsAMinute() {
-        XCTAssertEqual(PaywallController.limit(.infinity), 2)
-        XCTAssertEqual(PaywallController.limit(.nan), 2)
-        XCTAssertEqual(PaywallController.limit(0), 2)
-        XCTAssertEqual(PaywallController.limit(-1), 2)
+        XCTAssertEqual(PaywallController.limit(.infinity), 5)
+        XCTAssertEqual(PaywallController.limit(.nan), 5)
+        XCTAssertEqual(PaywallController.limit(0), 5)
+        XCTAssertEqual(PaywallController.limit(-1), 5)
         XCTAssertEqual(PaywallController.limit(1e12), 60)
         XCTAssertEqual(PaywallController.limit(0.5), 0.5)
     }

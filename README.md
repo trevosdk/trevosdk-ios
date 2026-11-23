@@ -5,7 +5,7 @@ gets the same variant here as on the web, verified against the shared conformanc
 Swift, no dependencies, iOS 15+ (also visionOS and macOS).
 
 ```swift
-.package(url: "https://github.com/trevosdk/trevosdk-ios", from: "0.1.3")
+.package(url: "https://github.com/trevosdk/trevosdk-ios", from: "0.1.4")
 ```
 
 ```swift
@@ -43,8 +43,9 @@ trevo.setLocale(nil)      // back to TrevoOptions.locale, or the app's localizat
 from your repo, so its layout can change without an App Store release. The app keeps its own billing:
 the page buys only through the functions you pass, and only plans `products` returned. Your current
 paywall is the fallback, shown whenever no page can: none published yet, not downloaded yet, or the
-page didn't draw within `readyTimeout` (2 seconds) of the WebView starting it. Getting the page
-started gets its own 5 seconds from opening, so a slow device or one with VoiceOver on still shows it.
+page didn't draw within `readyTimeout` (5 seconds) of its script first talking to the app. Getting
+the page's script running gets its own 8 seconds from opening, so a slow device or one with
+VoiceOver on still shows it.
 
 ```swift
 .sheet(isPresented: $showPaywall) {

@@ -23,7 +23,7 @@
             products: @escaping @MainActor () async throws -> [TrevoPaywallProduct],
             buy: @escaping @MainActor (String) async throws -> TrevoPurchaseOutcome,
             restore: @escaping @MainActor () async throws -> TrevoRestoreOutcome,
-            links: [String: URL] = [:], readyTimeout: TimeInterval = 2,
+            links: [String: URL] = [:], readyTimeout: TimeInterval = 5,
             onClose: (@MainActor () -> Void)? = nil,
             fallback: @escaping @MainActor () -> UIViewController
         ) {

@@ -160,10 +160,6 @@
             navigationAction.request.url?.scheme == "about" ? .allow : .cancel
         }
 
-        func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
-            controller?.pageCommitted()
-        }
-
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
             controller?.contentProcessTerminated()
         }

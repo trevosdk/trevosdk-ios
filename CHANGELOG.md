@@ -4,6 +4,17 @@ All notable changes to the **TrevoSDK** Swift package are documented here.
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-11-22
+
+### Fixed
+
+- Remote paywall: the ready limit now starts at the page's first call to the app, once its
+  script runs, and its default rises from 2 to 5 seconds; only a miss after that first call counts
+  against the page version. Getting there has 8 seconds from opening (or the app's limit if longer),
+  up from 5. In testing a cold WebView took up to 5.4 seconds to run the page's script, and a healthy
+  page on a slow device up to 3 seconds more to draw, so normal opens fell back and slow devices
+  could lose a healthy version.
+
 ## [0.1.3] - 2026-11-20
 
 ### Fixed

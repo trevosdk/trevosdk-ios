@@ -44,10 +44,10 @@ final class PaywallController {
         case idle, loading, shown, fallback, closed
     }
 
-    static let defaultReadyTimeout: TimeInterval = 2
+    static let defaultReadyTimeout: TimeInterval = 5
     static let maxReadyTimeout: TimeInterval = 60
-    // A cold WebView can take ~3 s to start a page, more with a screen reader on.
-    static let startTimeout: TimeInterval = 5
+    // A cold WebView took up to 5.3 s to run a page's script in the lab, more with a screen reader on.
+    static let startTimeout: TimeInterval = 8
     static let fallbackEvent = "$paywall_fallback"
     static let purchaseEvent = "purchase"
 
@@ -66,7 +66,7 @@ final class PaywallController {
     private var sha256: String?
     private var cancelTimer: (() -> Void)?
     private var handedOff = false
-    private var committed = false
+    private var spoke = false
     // Locked so the nonisolated deinit can cancel it when the view goes without calling stop().
     private let subscription = Locked<TrevoSubscription?>(nil)
     private var lastContext: TrevoValue?
@@ -126,7 +126,7 @@ final class PaywallController {
             let subscription = client.onChange { [weak self] in self?.contextChanged() }
             self.subscription.withLock { $0 = subscription }
             lastContext = context
-            // One start limit covers compiling the rules, making the WebView and starting the page.
+            // One start limit covers compiling the rules, making the WebView and running the page's script.
             let startLimit = min(max(readyTimeout, Self.startTimeout), Self.maxReadyTimeout)
             cancelTimer = schedule(startLimit) { [weak self] in self?.notStartedInTime() }
             surface?.load(html)
@@ -137,17 +137,6 @@ final class PaywallController {
     func documentHandedOff() {
         guard phase == .loading else { return }
         handedOff = true
-    }
-
-    /// The WebView committed the page's navigation: the ready limit starts now, and a timeout from
-    /// here is the page's fault.
-    func pageCommitted() {
-        guard phase == .loading, !committed else { return }
-        committed = true
-        // A page that already failed mid-purchase must not be timed, and so counted, again.
-        guard heldFallback == nil, !closePending else { return }
-        cancelTimer?()
-        cancelTimer = schedule(readyTimeout) { [weak self] in self?.timedOut() }
     }
 
     /// The platform has no WebView the paywall can use.
@@ -162,7 +151,17 @@ final class PaywallController {
 
     /// A message from the page's main frame.
     func receive(_ raw: Any?) {
-        host?.receive(raw)
+        guard let host else { return }
+        host.receive(raw)
+        if host.spoken, !spoke { pageSpoke() }
+    }
+
+    // The page's script runs: the ready limit starts now, and a timeout from here is the page's fault.
+    private func pageSpoke() {
+        spoke = true
+        guard phase == .loading else { return }
+        cancelTimer?()
+        cancelTimer = schedule(readyTimeout) { [weak self] in self?.timedOut() }
     }
 
     // Not counted against the version: the system ends content processes to free memory.
@@ -177,10 +176,10 @@ final class PaywallController {
         end()
     }
 
-    // A WebView too slow to even start the page isn't the page's fault, so it doesn't count.
+    // A WebView too slow to run the page's script isn't the page's fault, so it doesn't count.
     private func timedOut() {
         guard phase == .loading else { return }
-        if committed, let sha256 { client.paywalls.recordFailure(sha256) }
+        if spoke, let sha256 { client.paywalls.recordFailure(sha256) }
         fail(.timeout)
     }
 

@@ -46,6 +46,8 @@ final class PaywallBridgeHost {
     private var purchasing = false
     private var listed: Set<String>?
     private(set) var closed = false
+    /// The page's script has sent a message with a usable id, so it is running.
+    var spoken: Bool { connected }
     /// App handlers still running, which tests wait on.
     private(set) var inFlight = 0
 
